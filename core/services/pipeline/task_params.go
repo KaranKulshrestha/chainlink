@@ -210,9 +210,21 @@ func (s *StringParam) UnmarshalPipelineParam(val interface{}) error {
 	case []byte:
 		*s = StringParam(string(v))
 		return nil
-	default:
-		return ErrBadInput
+
+	case ObjectParam:
+		if v.Type == StringType {
+			*s = v.StringValue
+			return nil
+		}
+
+	case *ObjectParam:
+		if v.Type == StringType {
+			*s = v.StringValue
+			return nil
+		}
+
 	}
+	return errors.Wrap(ErrBadInput, fmt.Sprintf("expected string, got %T", val))
 }
 
 type BytesParam []byte
@@ -239,7 +251,7 @@ func (b *BytesParam) UnmarshalPipelineParam(val interface{}) error {
 	case nil:
 		*b = BytesParam(nil)
 	default:
-		return ErrBadInput
+		return errors.Wrap(ErrBadInput, fmt.Sprintf("expected array of bytes, got %T", val))
 	}
 	return nil
 }
@@ -277,7 +289,7 @@ func (u *Uint64Param) UnmarshalPipelineParam(val interface{}) error {
 		}
 		*u = Uint64Param(n)
 	default:
-		return ErrBadInput
+		return errors.Wrap(ErrBadInput, fmt.Sprintf("expected unsiend integer, got %T", val))
 	}
 	return nil
 }
@@ -324,7 +336,7 @@ func (p *MaybeUint64Param) UnmarshalPipelineParam(val interface{}) error {
 		}
 
 	default:
-		return ErrBadInput
+		return errors.Wrap(ErrBadInput, fmt.Sprintf("expected unsigned integer or nil, got %T", val))
 	}
 
 	*p = MaybeUint64Param{n, true}
@@ -395,7 +407,7 @@ func (p *MaybeInt32Param) UnmarshalPipelineParam(val interface{}) error {
 		n = int32(i)
 
 	default:
-		return ErrBadInput
+		return errors.Wrap(ErrBadInput, fmt.Sprintf("expected signed integer or nil, got %T", val))
 	}
 
 	*p = MaybeInt32Param{n, true}
@@ -420,14 +432,33 @@ func (b *BoolParam) UnmarshalPipelineParam(val interface{}) error {
 	case bool:
 		*b = BoolParam(v)
 		return nil
-	default:
-		return ErrBadInput
+
+	case ObjectParam:
+		if v.Type == BoolType {
+			*b = v.BoolValue
+			return nil
+		}
+
+	case *ObjectParam:
+		if v.Type == BoolType {
+			*b = v.BoolValue
+			return nil
+		}
+
 	}
+	return errors.Wrap(ErrBadInput, fmt.Sprintf("expected true or false, got %T", val))
 }
 
 type DecimalParam decimal.Decimal
 
 func (d *DecimalParam) UnmarshalPipelineParam(val interface{}) error {
+	if v, ok := val.(ObjectParam); ok && v.Type == DecimalType {
+		*d = v.DecimalValue
+		return nil
+	} else if v, ok := val.(*ObjectParam); ok && v.Type == DecimalType {
+		*d = v.DecimalValue
+		return nil
+	}
 	x, err := utils.ToDecimal(val)
 	if err != nil {
 		return errors.Wrap(ErrBadInput, err.Error())
@@ -511,9 +542,21 @@ func (m *MapParam) UnmarshalPipelineParam(val interface{}) error {
 		*m = MapParam(theMap)
 		return nil
 
-	default:
-		return ErrBadInput
+	case ObjectParam:
+		if v.Type == MapType {
+			*m = v.MapValue
+			return nil
+		}
+
+	case *ObjectParam:
+		if v.Type == MapType {
+			*m = v.MapValue
+			return nil
+		}
+
 	}
+
+	return errors.Wrap(ErrBadInput, fmt.Sprintf("expected map, got %T", val))
 }
 
 type SliceParam []interface{}
@@ -522,8 +565,10 @@ func (s *SliceParam) UnmarshalPipelineParam(val interface{}) error {
 	switch v := val.(type) {
 	case nil:
 		*s = nil
+		return nil
 	case []interface{}:
 		*s = v
+		return nil
 	case string:
 		return s.UnmarshalPipelineParam([]byte(v))
 
@@ -535,11 +580,9 @@ func (s *SliceParam) UnmarshalPipelineParam(val interface{}) error {
 		}
 		*s = SliceParam(theSlice)
 		return nil
-
-	default:
-		return ErrBadInput
 	}
-	return nil
+
+	return errors.Wrap(ErrBadInput, fmt.Sprintf("expected slice, got %T", val))
 }
 
 func (s SliceParam) FilterErrors() (SliceParam, int) {
@@ -568,11 +611,12 @@ func (s *DecimalSliceParam) UnmarshalPipelineParam(val interface{}) error {
 		return s.UnmarshalPipelineParam(SliceParam(v))
 	case SliceParam:
 		for _, x := range v {
-			d, err := utils.ToDecimal(x)
+			var d DecimalParam
+			err := d.UnmarshalPipelineParam(x)
 			if err != nil {
-				return errors.Wrapf(ErrBadInput, "DecimalSliceParam: wrong type of value while decoding decimals: %v", err.Error())
+				return err
 			}
-			dsp = append(dsp, d)
+			dsp = append(dsp, d.Decimal())
 		}
 	case string:
 		return s.UnmarshalPipelineParam([]byte(v))
@@ -586,7 +630,7 @@ func (s *DecimalSliceParam) UnmarshalPipelineParam(val interface{}) error {
 		return s.UnmarshalPipelineParam(SliceParam(theSlice))
 
 	default:
-		return errors.Wrap(ErrBadInput, "DecimalSliceParam")
+		return errors.Wrap(ErrBadInput, fmt.Sprintf("expected number, got %T", val))
 	}
 	*s = dsp
 	return nil
