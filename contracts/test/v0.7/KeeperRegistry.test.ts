@@ -54,6 +54,7 @@ describe('KeeperRegistry', () => {
   const executeGas = BigNumber.from('100000')
   const paymentPremiumBase = BigNumber.from('1000000000')
   const paymentPremiumPPB = BigNumber.from('250000000')
+  const flatFeeMicroLink = BigNumber.from(0)
   const blockCountPerTurn = BigNumber.from(3)
   const emptyBytes = '0x00'
   const zeroAddress = ethers.constants.AddressZero
@@ -121,6 +122,7 @@ describe('KeeperRegistry', () => {
         linkEthFeed.address,
         gasPriceFeed.address,
         paymentPremiumPPB,
+        flatFeeMicroLink,
         blockCountPerTurn,
         maxCheckGas,
         stalenessSeconds,
@@ -152,11 +154,18 @@ describe('KeeperRegistry', () => {
     id = await getUpkeepID(tx)
   })
 
-  const linkForGas = (upkeepGasSpent: BigNumberish) => {
+  const linkForGas = (
+    upkeepGasSpent: BigNumberish,
+    premiumPPB?: BigNumberish,
+    flatFee?: BigNumberish,
+  ) => {
+    premiumPPB = premiumPPB === undefined ? paymentPremiumPPB : premiumPPB
+    flatFee = flatFee === undefined ? flatFeeMicroLink : flatFee
     const gasSpent = registryGasOverhead.add(BigNumber.from(upkeepGasSpent))
     const base = gasWei.mul(gasSpent).mul(linkDivisibility).div(linkEth)
-    const premium = base.mul(paymentPremiumPPB).div(paymentPremiumBase)
-    return base.add(premium)
+    const premium = base.mul(premiumPPB).div(paymentPremiumBase)
+    const flatFeeJules = BigNumber.from(flatFee).mul('1000000000000')
+    return base.add(premium).add(flatFeeJules)
   }
 
   describe('#setKeepers', () => {
@@ -536,6 +545,7 @@ describe('KeeperRegistry', () => {
             .connect(owner)
             .setConfig(
               paymentPremiumPPB,
+              flatFeeMicroLink,
               blockCountPerTurn,
               maxCheckGas,
               stalenessSeconds,
@@ -714,6 +724,7 @@ describe('KeeperRegistry', () => {
           .connect(owner)
           .setConfig(
             paymentPremiumPPB,
+            flatFeeMicroLink,
             blockCountPerTurn,
             maxCheckGas,
             stalenessSeconds,
@@ -749,6 +760,7 @@ describe('KeeperRegistry', () => {
           .connect(owner)
           .setConfig(
             paymentPremiumPPB,
+            flatFeeMicroLink,
             blockCountPerTurn,
             maxCheckGas,
             stalenessSeconds,
@@ -1321,12 +1333,13 @@ describe('KeeperRegistry', () => {
 
   describe('#setConfig', () => {
     const payment = BigNumber.from(1)
-    const checks = BigNumber.from(2)
-    const staleness = BigNumber.from(3)
-    const ceiling = BigNumber.from(10)
-    const maxGas = BigNumber.from(4)
-    const fbGasEth = BigNumber.from(5)
-    const fbLinkEth = BigNumber.from(6)
+    const flatFee = BigNumber.from(2)
+    const checks = BigNumber.from(3)
+    const staleness = BigNumber.from(4)
+    const ceiling = BigNumber.from(5)
+    const maxGas = BigNumber.from(6)
+    const fbGasEth = BigNumber.from(7)
+    const fbLinkEth = BigNumber.from(8)
 
     it('reverts when called by anyone but the proposed owner', async () => {
       await evmRevert(
@@ -1334,6 +1347,7 @@ describe('KeeperRegistry', () => {
           .connect(payee1)
           .setConfig(
             payment,
+            flatFee,
             checks,
             maxGas,
             staleness,
@@ -1347,7 +1361,9 @@ describe('KeeperRegistry', () => {
 
     it('updates the config', async () => {
       const old = await registry.getConfig()
+      const oldFlatFee = await registry.getFlatFee()
       assert.isTrue(paymentPremiumPPB.eq(old.paymentPremiumPPB))
+      assert.isTrue(flatFeeMicroLink.eq(oldFlatFee))
       assert.isTrue(blockCountPerTurn.eq(old.blockCountPerTurn))
       assert.isTrue(stalenessSeconds.eq(old.stalenessSeconds))
       assert.isTrue(gasCeilingMultiplier.eq(old.gasCeilingMultiplier))
@@ -1356,6 +1372,7 @@ describe('KeeperRegistry', () => {
         .connect(owner)
         .setConfig(
           payment,
+          flatFee,
           checks,
           maxGas,
           staleness,
@@ -1365,7 +1382,9 @@ describe('KeeperRegistry', () => {
         )
 
       const updated = await registry.getConfig()
+      const newFlatFee = await registry.getFlatFee()
       assert.equal(updated.paymentPremiumPPB, payment.toNumber())
+      assert.equal(newFlatFee, flatFee.toNumber())
       assert.equal(updated.blockCountPerTurn, checks.toNumber())
       assert.equal(updated.stalenessSeconds, staleness.toNumber())
       assert.equal(updated.gasCeilingMultiplier, ceiling.toNumber())
@@ -1379,6 +1398,7 @@ describe('KeeperRegistry', () => {
         .connect(owner)
         .setConfig(
           payment,
+          flatFee,
           checks,
           maxGas,
           staleness,
@@ -1589,9 +1609,41 @@ describe('KeeperRegistry', () => {
     })
   })
 
+  describe('#getMaxPaymentForGas', () => {
+    const gasAmounts = [100000, 10000000]
+    const premiums = [0, 250000000]
+    const flatFees = [0, 1000000]
+    it('calculates the max fee approptiately', async () => {
+      for (let idx = 0; idx < gasAmounts.length; idx++) {
+        const gas = gasAmounts[idx]
+        for (let jdx = 0; jdx < premiums.length; jdx++) {
+          const premium = premiums[jdx]
+          for (let kdx = 0; kdx < flatFees.length; kdx++) {
+            const flatFee = flatFees[kdx]
+            await registry
+              .connect(owner)
+              .setConfig(
+                premium,
+                flatFee,
+                blockCountPerTurn,
+                maxCheckGas,
+                stalenessSeconds,
+                gasCeilingMultiplier,
+                fallbackGasPrice,
+                fallbackLinkPrice,
+              )
+            const price = await registry.getMaxPaymentForGas(gas)
+            expect(price).to.equal(linkForGas(gas, premium, flatFee))
+          }
+        }
+      }
+    })
+  })
+
   describe('#checkUpkeep / #performUpkeep', () => {
     const performData = '0xc0ffeec0ffee'
     const multiplier = BigNumber.from(10)
+    const flatFee = BigNumber.from('100000') //0.1 LINK
     const callGasPrice = 1
 
     it('uses the same minimum balance calculation [ @skip-coverage ]', async () => {
@@ -1599,6 +1651,7 @@ describe('KeeperRegistry', () => {
         .connect(owner)
         .setConfig(
           paymentPremiumPPB,
+          flatFee,
           blockCountPerTurn,
           maxCheckGas,
           stalenessSeconds,
@@ -1608,8 +1661,8 @@ describe('KeeperRegistry', () => {
         )
       await linkToken.connect(owner).approve(registry.address, toWei('100'))
 
-      // max payment is .75 eth for this config - this spread will yield some eligible and some ineligible
-      const balances = ['0', '0.01', '0.1', '0.4', '0.7', '0.8', '1', '2', '10']
+      // max payment is .85 link for this config - this spread will yield some eligible and some ineligible
+      const balances = ['0', '0.01', '0.1', '0.7', '0.8', '0.9', '1', '2', '10']
       let revertCount = 0
 
       for (let idx = 0; idx < balances.length; idx++) {
